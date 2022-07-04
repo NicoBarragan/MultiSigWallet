@@ -7,6 +7,11 @@ error Error__NotEnoughOwners();
 error Error__InvalidRequiredApprovals(uint256 minRequired, uint256 maxRequired);
 error Error__OwnerNotUnique();
 error Error__NotEnoughApprovals(uint256 minApprovals, uint256 actualApprovals);
+error Error__TxAlreadyExists();
+error Error__TxAlreadyApproved();
+error Error__TxNotApproved();
+error Error__TxAlreadyExecuted();
+error Error__IsNotOwner();
 
 contract MultiSigWallet is ReentrancyGuard {
     event Deposit(address indexed sender, uint256 amount);
@@ -22,31 +27,44 @@ contract MultiSigWallet is ReentrancyGuard {
         bool executed;
     }
 
+    struct Approvals {
+        uint256 ApprovalCount;
+        mapping(address => bool) Owners;
+        bool approved;
+    }
+
     address[] public owners;
     mapping(address => bool) public isOwner;
-    uint256 public required; // number of approvals required
 
     Transaction[] public transactions;
-    mapping(uint256 => mapping(address => bool)) public approved;
-    // mapping(txIdx => mapping(sender => isOnwer))
+    uint256 public required; // number of approvals required
+    mapping(uint256 => Approvals) public approvals;
 
     modifier onlyOwner() {
-        require(isOwner[msg.sender], "Only owner can call this function");
+        if (!(isOwner[msg.sender])) {
+            revert Error__IsNotOwner();
+        }
         _;
     }
 
     modifier txExists(uint256 _txId) {
-        require(_txId < transactions.length, "Transaction does not exist");
+        if (_txId >= transactions.length) {
+            revert Error__TxAlreadyExists();
+        }
         _;
     }
 
     modifier notApproved(uint256 _txId) {
-        require(!approved[_txId][msg.sender], "Transaction already approved");
+        if (approvals[_txId].approved) {
+            revert Error__TxAlreadyApproved();
+        }
         _;
     }
 
     modifier notExecuted(uint256 _txId) {
-        require(!transactions[_txId].executed, "Transaction already executed");
+        if (transactions[_txId].executed) {
+            revert Error__TxAlreadyExecuted();
+        }
         _;
     }
 
@@ -103,20 +121,18 @@ contract MultiSigWallet is ReentrancyGuard {
         notApproved(_txId)
         notExecuted(_txId)
     {
-        approved[_txId][msg.sender] = true;
+        approvals[_txId].ApprovalCount += 1;
+        approvals[_txId].Owners[msg.sender] = true;
+
         emit Approve(msg.sender, _txId);
     }
 
     function _getApprovalCount(uint256 _txId)
-        private
+        internal
         view
         returns (uint256 count)
     {
-        for (uint256 i = 0; i < owners.length; i++) {
-            if (approved[_txId][owners[i]]) {
-                count += 1;
-            }
-        }
+        count = approvals[_txId].ApprovalCount;
     }
 
     function execute(uint256 _txId)
@@ -129,6 +145,7 @@ contract MultiSigWallet is ReentrancyGuard {
         if (approvalCount < required) {
             revert Error__NotEnoughApprovals(required, approvalCount);
         }
+
         transactions[_txId].executed = true;
 
         (bool success, ) = transactions[_txId].sender.call{
@@ -145,8 +162,12 @@ contract MultiSigWallet is ReentrancyGuard {
         txExists(_txId)
         notExecuted(_txId)
     {
-        require(approved[_txId][msg.sender], "Transaction not approved");
-        approved[_txId][msg.sender] = false;
+        if (!(approvals[_txId].Owners[msg.sender])) {
+            revert Error__TxNotApproved();
+        }
+
+        approvals[_txId].Owners[msg.sender] = false;
+        approvals[_txId].ApprovalCount -= 1;
 
         emit Revoke(msg.sender, _txId);
     }
